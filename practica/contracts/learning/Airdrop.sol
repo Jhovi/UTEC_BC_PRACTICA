@@ -108,19 +108,17 @@ contract Airdrop is AccessControl {
 
 
     struct Participante {
-        address account;
+        address cuenta;
         uint256 horaRegistro;
-        bool blueList;
-        bool whiteList;
+        bool participanteHabilitado;
     }
 
     // mapping(address => ??) _whiteList;
-    mapping(address => bool) _whiteList;
+    mapping(address => Participante) _whiteList;
 
-    mapping(address => Participante) _participantes;
 
     // mapping(address => ??) _blueList;
-    mapping(address => bool) _blueList;
+    mapping(address => Participante) _blueList;
 
     function addToWhiteListBatch(address[] memory _addresses)
         public
@@ -129,10 +127,15 @@ contract Airdrop is AccessControl {
         uint256 _length = _addresses.length;
         for (uint256 i = 0; i < _length; i++) {
             // _whiteList
-            _whiteList[_addresses[i]] = true;
-
-            Participante memory participante = Participante(_addresses[i], block.timestamp, true, false);
-            _participantes[_addresses[i]] = participante;
+            if (_whiteList[msg.sender].cuenta == address(0)) {
+            Participante memory participante = Participante(_addresses[i], block.timestamp, true);
+            _whiteList[_addresses[i]] = participante;
+            } else {
+                if (_whiteList[msg.sender].horaRegistro + 1 days < block.timestamp || !_whiteList[msg.sender].participanteHabilitado) {
+                    _whiteList[_addresses[i]].participanteHabilitado = true;
+                    _whiteList[_addresses[i]].horaRegistro = block.timestamp;
+                }
+            }
 
         }
     }
@@ -141,11 +144,11 @@ contract Airdrop is AccessControl {
         // accede a la informacion de msg.sender en _whiteList
         // verifica si esta en whitelist
         // require(?, "Participante no esta en whitelist");
-        require(_whiteList[msg.sender], "Participante no esta en whitelist");
+        require(_whiteList[msg.sender].cuenta != address(0), "Participante no esta en whitelist");
 
         // valida que no hayan pasado mas de 24 h
-        bool pasoUnDia = _participantes[msg.sender].horaRegistro + 1 days < block.timestamp;
-        require(!pasoUnDia, "Pasaron mas de 24 horas");
+        bool pasoUnDia = _whiteList[msg.sender].horaRegistro + 1 days > block.timestamp;
+        require(pasoUnDia, "Pasaron mas de 24 horas");
         // require(?, "Pasaron mas de 24 horas");
 
         // entrega tokens a msg.sender
@@ -153,8 +156,7 @@ contract Airdrop is AccessControl {
         ITokenAIRDRP(tokenAIRDRPAddress).mint(msg.sender, _amntTokens);
 
         // eliminar de whitelist a msg.sender
-        _whiteList[msg.sender] = false;
-        _participantes[msg.sender].whiteList = false;
+        _whiteList[msg.sender] = Participante(address(0), block.timestamp, false);
     }
 
     function addToBlueListBatch(address[] memory _addresses)
@@ -164,26 +166,31 @@ contract Airdrop is AccessControl {
         uint256 _length = _addresses.length;
         for (uint256 i = 0; i < _length; i++) {
             // _blueList
-            _blueList[_addresses[i]] = true;
-
-            Participante memory participante = Participante(_addresses[i], block.timestamp, false,  true);
-            _participantes[_addresses[i]] = participante;
+            if (_blueList[msg.sender].cuenta == address(0)) {
+                Participante memory participante = Participante(_addresses[i], block.timestamp, true);
+                _blueList[_addresses[i]] = participante; 
+            } else {
+                if (_blueList[msg.sender].horaRegistro + 1 days < block.timestamp || !_blueList[msg.sender].participanteHabilitado) {
+                    _blueList[_addresses[i]].participanteHabilitado = true;
+                    _blueList[_addresses[i]].horaRegistro = block.timestamp;
+                }
+            }
         }
     }
 
     function mintWithBlueList() external {
         // accede a la informacion de msg.sender en _blueList
-        require(_blueList[msg.sender], "Participante no esta en bluelist");
+        require(_blueList[msg.sender].cuenta != address(0), "Participante no esta en bluelist");
 
         // verifica si esta en bluelist
+        require(_blueList[msg.sender].participanteHabilitado, "Participante no esta en bluelist");
 
-        uint256 tEnQueIngresoMsgSender; // /** pasa el tiempo en el que ingreso*/
+        uint256 tEnQueIngresoMsgSender = _blueList[msg.sender].horaRegistro; // /** pasa el tiempo en el que ingreso*/
         uint256 _amntTokens = _getTokensBasedOnTime(tEnQueIngresoMsgSender);
         ITokenAIRDRP(tokenAIRDRPAddress).mint(msg.sender, _amntTokens);
 
         // eliminar de blue list
-        _blueList[msg.sender] = false;
-        _participantes[msg.sender].blueList = false;
+        _blueList[msg.sender] = Participante(address(0), block.timestamp, false);
     }
 
     function burnMyTokensToParticipate() external {
@@ -191,14 +198,19 @@ contract Airdrop is AccessControl {
         // incluye validaciones
         uint256 bal = ITokenAIRDRP(tokenAIRDRPAddress).balanceOf(msg.sender);
         // require(bal?, "No tiene suficientes tokens para quemar");
+        require(bal >= amntTokensToBurn, "No tiene suficientes tokens para quemar");
 
         // require(?, "Esta en lista blanca");
-        require(_whiteList[msg.sender], "Esta en lista blanca");
+        require(_whiteList[msg.sender].cuenta == address(0), "Esta en lista blanca");
+
+        // require(?, "Esta en lista blanca");
+        require(!_whiteList[msg.sender].participanteHabilitado, "Esta en lista blanca");
 
         // burn tokens del caller
         ITokenAIRDRP(tokenAIRDRPAddress).burn(msg.sender, amntTokensToBurn);
 
         // ingresa a msg.sender en lista blanca
+        _whiteList[msg.sender] = Participante(msg.sender, block.timestamp, true);
     }
 
     //////////////////////////////////////////////////
@@ -219,12 +231,14 @@ contract Airdrop is AccessControl {
 
 
         uint256 totalTime = 60 * 60; // m + r -> 60 min x 60 sec
-        uint256 timePased; // m -> block.timestamp - _enterTime
-        require(totalTime > timePased, "Pasaron mas de 60 minutos");
+        uint256 timePased = block.timestamp - _enterTime; // m -> block.timestamp - _enterTime
+        require(totalTime >= timePased, "Pasaron mas de 60 minutos");
 
-        uint256 remainingTime; // r -> totalTime - m
+        uint256 remainingTime = totalTime - timePased; // r -> totalTime - m
         // tokens a entregar = (r * prizeTokensBlueList) / ( m + r)
-        return 0;
+
+        uint256 tokensAEntregar = (remainingTime * prizeTokensBlueList) / (timePased + remainingTime );
+        return tokensAEntregar;
     }
 
     function _getRandom() internal view returns (uint256) {
